@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<!--
+  =============================================================================
+  F5 TMOS HA-Group Calculator
+  =============================================================================
+  Version: v2.0.0
+  Author: Eric Haupt
+  Released under the MIT License.
+  https://github.com/hauptem/F5-TMOS-HA-Group-Calculator
+  PURPOSE:
+    Offline model of BIG-IP HA group scoring for trunk-based failover.
+    Computes per-trunk score contributions from weight, minimum threshold
+    and sufficient threshold, applies the active bonus, and shows which
+    device holds the traffic group. Treats each input change as a monitor
+    interval so failover, manual failover and timed auto failback can be
+    walked step by step. Produces a failover matrix and active bonus
+    bounds for the active device. Scoring follows BIG-IP 13.0 and later.
+  =============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F5 TMOS HA-Group Calculator</title>
+<style>
+/* Palette: TMUI Theme1 AGLight */
+:root{
+  --bg:#c4c3bf; --panel:#eae9e5; --ink:#333; --muted:#666; --line:#8f8f8f;
+  --header:linear-gradient(to bottom,#777 0%,#3b3b3b 100%); --section:linear-gradient(to bottom,#728192 0%,#525e69 100%);
+  --section-ink:#ffe375; --input:#fff; --input-line:#ccc; --focus:#6ca612;
+  --accent:#6ca612; --accent-hover:#5a9010; --warning:#ffe375; --warning-hover:#ffd54f; --secondary:#666667;
+  --ok:#1F7A45; --ok-bg:#DDF3E4; --bad:#A3001F; --bad-bg:#FBDCE1; --warn-ink:#8A5A00;
+  --shadow-light:0 1px 3px rgba(0,0,0,.12); --shadow-heavy:0 4px 10px rgba(0,0,0,.5);
+  --mono:'Courier New',monospace; --sans:Roboto,'Helvetica Neue',Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{overflow-y:scroll;scrollbar-gutter:stable}
+dialog#guide{background:#eae9e5;color:#333;border:none;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,.7);padding:0;width:min(960px,75vw);max-width:none;max-height:90vh;margin:auto;overflow:hidden}
+dialog#guide::backdrop{background:rgba(0,0,0,.82);backdrop-filter:blur(2px)}
+.guide-h{display:flex;align-items:center;justify-content:space-between;padding:10px 18px;background:var(--header);color:#fff;box-shadow:var(--shadow-heavy);position:sticky;top:0}
+.guide-h b{font-size:20px;font-weight:normal;letter-spacing:.5px}
+.guide-b{padding:6px 22px 20px;overflow-y:auto;max-height:calc(90vh - 50px);font-size:13.5px;line-height:1.55;background:#ffffff;color:#111417}
+.guide-b h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:#000;margin:20px 0 6px;border-bottom:1px solid #c8ccd2;padding-bottom:4px}
+.guide-b p{margin:7px 0}
+.guide-b ul,.guide-b ol{margin:6px 0 6px 22px;padding:0}
+.guide-b li{margin:4px 0}
+.guide-b code{font-family:var(--mono);font-size:12px;background:#eef0f3;border:1px solid #c8ccd2;border-radius:2px;padding:1px 5px}
+.guide-b a{color:#1f5faf;text-decoration:none}
+.guide-b a:hover{text-decoration:underline}
+#guideClose{width:92px;padding:6px 0;text-align:center;background:#3b3b3b;border:1px solid #000;color:#fff;border-radius:3px;font:400 12.5px var(--sans);cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.08);transition:background .12s,border-color .12s,box-shadow .12s,transform .12s}
+#guideClose:hover{background:#4a4a4a;border-color:#000;box-shadow:0 2px 5px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.12);transform:translateY(-1px)}
+#guideBtn{margin-left:auto;width:92px;padding:6px 0;text-align:center;background:#ffc22e;border:1px solid #ffd763;color:#14181f;border-radius:3px;font:600 12.5px var(--sans);cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.08);transition:background .12s,border-color .12s,box-shadow .12s,transform .12s}
+#guideBtn:hover{background:#ffd04f;border-color:#ffe28f;box-shadow:0 2px 5px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.12);transform:translateY(-1px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 var(--sans)}
+header{background:var(--header);color:#fff;padding:14px 24px;display:flex;align-items:center;gap:16px;box-shadow:var(--shadow-heavy)}
+header h1{margin:0;font-size:20px;font-weight:normal;letter-spacing:.5px;display:flex;align-items:center;gap:10px}
+header h1 .logo{width:30px;height:31px;display:block}
+main{padding:20px 24px 40px;max-width:1440px;margin:0 auto}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media (max-width:980px){.pair{grid-template-columns:1fr}}
+th .short{display:none}
+@media (max-width:1200px) and (min-width:981px){ th .full{display:none} th .short{display:inline} }
+@media (max-width:1400px) and (min-width:981px){
+  th{font-size:9.5px;letter-spacing:0;padding:6px 2px 5px}
+  td{padding:3px 2px}
+  td select{min-width:0;width:100%;max-width:60px;padding:3px 12px 3px 2px;font-size:11px;appearance:none;-webkit-appearance:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23333'/%3E%3C/svg%3E") no-repeat right 3px center}
+  td.name input[type=text]{font-size:12px;padding:3px 2px}
+  td.calc{font-size:12px}
+  .device>h2{font-size:14px;padding:8px 10px}
+  .tools .btn,.tools button.tag{width:100px;font-size:11px}
+  .ledger{padding:0 10px}
+  .ledger label{font-size:11px}
+  .ledger label:nth-of-type(2){display:none}
+  .ledger .eq{gap:6px;margin-left:10px}
+  .ledger .eq .part{width:44px}
+}
+.device{background:var(--panel);box-shadow:var(--shadow-heavy);border-radius:4px;overflow:hidden}
+.device>h2{margin:0;padding:10px 14px;background:var(--section);color:var(--section-ink);font-size:15px;font-weight:600;display:flex;align-items:center;gap:10px}
+.form-section{display:contents}
+table{border-collapse:collapse;width:100%;background:#fff;table-layout:fixed}
+th{font-size:11px;font-weight:600;color:#fff;text-transform:uppercase;letter-spacing:.2px;padding:8px 4px 6px;text-align:center;vertical-align:top;border:none;background:var(--section);white-space:normal;line-height:1.2}
+td{padding:3px 4px;text-align:center;vertical-align:middle;border:none;white-space:nowrap;overflow:hidden;height:36px}
+td select,td input{vertical-align:middle}
+tbody tr:nth-child(even){background:#f7f6f5}
+td.calc{font-family:var(--mono);color:var(--muted)}
+td.calc.hit{color:var(--ink);font-weight:bold}
+td.calc.zero,tr.breach td.calc{color:var(--bad)}
+select{min-width:56px;padding:4px 4px;text-align:center;font:600 13px var(--mono);background:var(--input);border:1px solid var(--input-line);color:var(--ink);cursor:pointer}
+select:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px rgba(108,166,18,.1)}
+select.invalid{border-color:#dc2626;background:#fdecec}
+td.name input[type=text]{width:100%;padding:4px;font:13px var(--sans);border:1px solid transparent;background:transparent;color:var(--ink)}
+td.name input[type=text]:hover,td.name input[type=text]:focus{border-color:var(--line);background:#fff;outline:none}
+td.rm{width:30px}
+td.rm button{border:0;background:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0 4px;vertical-align:middle}
+td.rm button:hover{color:var(--bad)}
+.tools{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:#f7f6f5;align-items:center;flex-wrap:wrap}
+button.btn,.tools button.tag{font:600 12px/1 var(--sans);letter-spacing:.2px;width:112px;height:23px;padding:0;text-align:center;border:1px solid #6e6e6d;border-radius:4px;cursor:pointer;background:linear-gradient(to bottom,#858584,#767675);color:#fff;box-shadow:0 2px 3px rgba(0,0,0,.45);transition:background .1s,box-shadow .1s,transform .05s}
+button.btn:hover,.tools button.tag:hover{background:linear-gradient(to bottom,#767675,#666665);box-shadow:0 3px 5px rgba(0,0,0,.5)}
+button.btn:active,.tools button.tag:active{background:#5e5e5d;box-shadow:inset 0 1px 2px rgba(0,0,0,.4);transform:translateY(1px)}
+button.btn:focus-visible,.tools button.tag:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button.btn:disabled{opacity:.45;cursor:default;box-shadow:none;transform:none}
+.tools .btn,.tools button.tag{flex:none}
+.ledger{padding:0 14px;height:48px;border-top:1px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:nowrap;overflow:hidden}
+.ledger label:nth-of-type(2){margin-left:24px}
+.ledger label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600}
+.ledger .eq{display:flex;align-items:center;gap:8px;white-space:nowrap;flex:1;min-width:0}
+.ledger .eq .part{display:inline-flex;flex-direction:column;align-items:center;line-height:1;width:52px;flex:none}
+.ledger .eq .pl{font-size:9px;white-space:nowrap;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:2px}
+.ledger .eq .pv{font:600 14px var(--mono);color:var(--ink)}
+.ledger .eq .op{color:var(--muted);font:600 14px var(--mono);width:12px;text-align:center}
+.ledger .eq .bonus .pv{color:var(--warn-ink)}
+.ledger .eq .void .pv{color:var(--bad)}
+.ledger .eq .note{font:600 11px var(--sans);color:var(--bad);text-transform:uppercase;letter-spacing:.4px;margin-left:4px}
+.ledger input.bonus{width:52px;padding:4px 6px;text-align:center;font:600 14px var(--mono);background:var(--input);border:1px solid var(--input-line);color:var(--ink)}
+.ledger input.bonus:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px rgba(108,166,18,.1)}
+.ledger input.bonus.invalid{border-color:#dc2626;background:#fdecec}
+.state{margin-top:0;padding:0;height:72px;display:flex;align-items:center;justify-content:center;text-align:center;font:700 34px/1 var(--sans);letter-spacing:1px;border-top:1px solid var(--line)}
+.state.active{background:var(--ok-bg);color:var(--ok)}
+.state.standby{background:var(--bad-bg);color:var(--bad)}
+.verdict{margin:20px 0 0;background:var(--panel);box-shadow:var(--shadow-heavy);border-radius:4px;overflow:hidden}
+.verdict .body{padding:4px 16px 14px;display:flex;flex-direction:column}
+.verdict .block{padding:8px 0}
+.verdict h4{margin:0 0 6px;font:600 12px var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.verdict p,.verdict li,.verdict ol,.verdict ul{margin:0;font:13px/1.5 var(--sans);color:var(--ink)}
+.verdict ul,.verdict ol{padding:0;list-style:none}
+.verdict .status p:first-of-type{font-weight:600}
+.verdict .msg:empty{display:none}
+.verdict .msg .bad{color:var(--bad)}
+.verdict .msg .warn{color:var(--warn-ink)}
+.settings{display:flex;flex-direction:column;gap:6px;padding:2px 0 0}
+.setting{display:flex;align-items:center;gap:10px;height:26px;font:13px var(--sans)}
+.setting .sl{width:110px;white-space:nowrap;font:600 12px var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.setting .st{color:var(--ink)}
+.setting select{height:26px;min-width:0;padding:0 24px 0 8px;font:600 12px var(--sans);text-align:left}
+#failbackTime{width:52px;height:26px;padding:0;text-align:center;font:600 13px var(--mono);border:1px solid var(--input-line);background:#fff;color:var(--ink)}
+#failbackTime:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px rgba(108,166,18,.1)}
+input.switch{appearance:none;-webkit-appearance:none;width:36px;height:20px;margin:0;border-radius:10px;background:#b5b4b0;position:relative;cursor:pointer;transition:background .15s;flex:none;box-shadow:0 2px 3px rgba(0,0,0,.45)}
+input.switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.5);transition:left .15s}
+input.switch:checked{background:var(--accent)}
+input.switch:checked::after{left:18px}
+input.switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.verdict .ctl.buttons{display:flex;gap:8px;flex-wrap:wrap;padding:10px 0 2px}
+.countdown{margin-left:12px;text-transform:none;letter-spacing:0;color:var(--warn-ink)}
+.log ol{background:#fff;padding:0 12px;max-height:180px;overflow:auto}
+.log li{padding:3px 0;height:auto;font:13px var(--sans);line-height:1.5}
+.log li.move{color:var(--bad)}
+.log li.stay{color:var(--muted)}
+.matrix{overflow-x:auto}
+.matrix .guide{margin-bottom:10px}
+table.mx{width:100%;table-layout:auto;margin-top:2px}
+table.mx th{padding:6px 12px;font-size:11px;color:#fff}
+table.mx td{padding:3px 12px;height:auto;font:13px var(--sans);line-height:1.5}
+table.mx tr.move td:last-child{color:var(--bad);font-weight:600}
+table.mx tr.stay td:last-child{color:var(--ok)}
+</style>
+</head>
+<body>
+<header>
+  <h1><img class="logo" src="data:image/png;base64,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" alt="F5" width="30" height="31"> TMOS HA-Group Calculator</h1>
+  <button id="guideBtn" class="guide" title="Open the user guide">User Guide</button>
+</header>
+<main>
+  <div class="pair" id="pair"></div>
+
+  <section class="verdict" id="verdict">
+    <div class="body">
+    <div class="block status">
+      <p id="vTitle"></p>
+      <p id="vText"></p>
+      <p class="msg" id="vMsg"></p>
+    </div>
+    <div class="settings">
+      <div class="setting">
+        <span class="sl">Auto failback</span>
+        <input type="checkbox" class="switch" id="autoFailback" title="Return the traffic group to the preferred device once it has been eligible for the delay (auto-failback-time)">
+        <span class="st">to</span>
+        <select id="preferred" title="Preferred device: first in the traffic group's HA order"><option value="0">Member 1</option><option value="1">Member 2</option></select>
+        <span class="st">after</span>
+        <input type="text" inputmode="numeric" id="failbackTime" maxlength="4" title="auto-failback-time in seconds (BIG-IP default 60)">
+        <span class="st">seconds</span>
+      </div>
+      <div class="setting">
+        <span class="sl">Config sync</span>
+        <input type="checkbox" class="switch" id="syncCfg" title="Copy members, thresholds, weight and names from Member 1 to Member 2 as they change. Links up stays independent.">
+        <span class="st">Member 2 follows Member 1</span>
+      </div>
+      <div class="setting">
+        <span class="sl">Trunk limit</span>
+        <select id="maxLinks" title="Largest trunk the platform supports; caps the Members list"><option value="8">8</option><option value="16">16</option><option value="32" selected>32</option></select>
+        <span class="st">links per trunk</span>
+      </div>
+    </div>
+    <div class="ctl buttons">
+      <button class="btn secondary" id="mirror" title="Copy trunk configuration and active bonus from Member 1 to Member 2 once. Links up is copied as well.">Mirror 1 to 2</button>
+      <button class="btn secondary" id="share" title="Copy a URL that reproduces this configuration, placement and settings">Copy link</button>
+      <button class="btn secondary" id="resetLog" title="Clear the failover log. Configuration and placement are kept.">Reset log</button>
+      <button class="btn secondary" id="reset" title="Restore defaults: one empty trunk per member, bonus 10, Member 1 active, log cleared">Reset all</button>
+    </div>
+    <div class="block log">
+      <h4>Failover log <span id="fbCountdown" class="countdown"></span></h4>
+      <ol id="log"></ol>
+    </div>
+    <div class="block matrix">
+      <h4 id="matrixTitle"></h4>
+      <ul id="bonusGuide" class="guide"></ul>
+      <table class="mx"><thead><tr><th>Trunk</th><th>Links lost</th><th>Contribution</th><th>Active total</th><th>Standby total</th><th>Outcome</th></tr></thead><tbody id="matrixBody"></tbody></table>
+    </div>
+    </div>
+  </section>
+
+  
+  <dialog id="guide" aria-labelledby="guideTitle">
+    <div class="guide-h">
+      <b id="guideTitle">User Guide</b>
+      <button id="guideClose" title="Close">Close</button>
+    </div>
+    <div class="guide-b">
+    
+    <h2>Use</h2>
+    <ol>
+      <li>Set the platform trunk limit (8, 16 or 32 links).</li>
+      <li>Add trunks and set members, links up, minimum threshold, sufficient threshold (0 = all members) and weight (10 to 100).</li>
+      <li>Set the active bonus (default 10). The ACTIVE device holds the traffic group; Fail to Standby moves it to the peer.</li>
+      <li>Every change is one monitor interval. The traffic group moves when the peer score is strictly higher and stays there until a later change moves it back.</li>
+      <li>Auto failback returns the group to the preferred device after it has been eligible for the configured delay (default 60 s). A link that recovers for less than the delay does not trigger failback.</li>
+      <li>The failover matrix shows the outcome of each possible link loss on the active device. Sync copies configuration from Member 1 to Member 2; Copy link captures the scenario in the URL.</li>
+    </ol>
+    
+    
+    <h2>Scoring</h2>
+    <ul>
+      <li>Contribution = <code>INT(weight × MIN(up, sufficient) / sufficient)</code>; sufficient defaults to the member count.</li>
+      <li>A trunk below its minimum threshold contributes 0 and zeroes the device score. A device with score 0 is ineligible and receives no bonus.</li>
+      <li>Device score = sum of contributions plus the active bonus on the device holding the traffic group.</li>
+      <li>Failover requires a strictly higher peer score. Equal scores keep the current device.</li>
+      <li>Trunks only. Pools, VIPRION clusters, VLAN failsafe and gateway failsafe are not modelled.</li>
+    </ul>
+    
+    
+    <h2>References</h2>
+    <ul>
+      <li><a href="https://techdocs.f5.com/en-us/bigip-14-1-0/big-ip-device-service-clustering-administration-14-1-0/managing-failover.html" target="_blank" rel="noopener">BIG-IP DSC Administration 14.1: Managing Failover</a> (HA groups, weight, minimum and sufficient threshold, active bonus)</li>
+      <li><a href="https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/bigip-system-maintain-high-availability-through-resource-monitoring-13-0-0/1.html" target="_blank" rel="noopener">Maintaining High Availability Through Resource Monitoring 13.0</a> (score arithmetic, worked trunk example)</li>
+      <li><a href="https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/bigip-device-service-clustering-admin-11-4-0/11.html" target="_blank" rel="noopener">BIG-IP DSC Administration 11.4: Understanding Fast Failover</a> (original threshold and active bonus definitions)</li>
+      <li><a href="https://clouddocs.f5.com/cli/tmsh-reference/v15/modules/sys/sys_ha-group.html" target="_blank" rel="noopener">tmsh reference: sys ha-group</a> (active-bonus range and default, minimum-threshold, sufficient-threshold, weight)</li>
+      <li><a href="https://techdocs.f5.com/en-us/bigip-14-1-0/big-ip-tmos-routing-administration-14-1-0/trunks/interfaces-for-a-trunk.html" target="_blank" rel="noopener">TMOS Routing Administration 14.1: Interfaces for a trunk</a> (16 or 32 links per trunk by platform; power-of-two recommendation)</li>
+      <li><a href="https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/tmos-routing-administration-12-1-0/3.html" target="_blank" rel="noopener">TMOS Routing Administration 12.1: Trunks</a> (8 links per trunk)</li>
+      <li><a href="https://my.f5.com/manage/s/article/K42303533" target="_blank" rel="noopener">K42303533</a> (trunk limit raised to 32 on supported platforms); K1689 (per-platform trunk limits)</li>
+    </ul>
+    
+  
+    </div>
+  </dialog>
+</main>
+
+<script>
+'use strict';
+
+/* Model
+ * Scoring rules follow BIG-IP DSC Administration (HA groups) and the tmsh sys ha-group reference.
+ * Contribution = INT(weight * MIN(up, sufficient) / sufficient); sufficient defaults to
+ * the member count. A trunk below its minimum threshold contributes 0 and makes the device ineligible
+ * (score 0, no bonus). The traffic group moves only when the peer's total is strictly higher.
+ */
+
+const LIMITS = { members: [0, 32], weight: [10, 100], bonus: [0, 100] };
+
+/** Score one trunk. Returns { contrib, breach, pct, skip } where skip marks an unused row. */
+function trunkScore(t) {
+  if (t.members <= 0) return { contrib: 0, breach: false, pct: null, skip: true };
+  if (t.up < t.min) return { contrib: 0, breach: true, pct: 0 };
+  const denom = t.suf > 0 ? t.suf : t.members;
+  const pct = Math.min(t.up, denom) / denom;
+  return { contrib: Math.floor(t.weight * pct), breach: false, pct };
+}
+
+/** Score one device. raw excludes the bonus; total includes it when the device is active and eligible. */
+function deviceScore(dev, isActive) {
+  const rows = dev.trunks.map(trunkScore);
+  const breach = rows.some(r => r.breach);
+  const raw = breach ? 0 : rows.reduce((sum, r) => sum + r.contrib, 0);
+  const total = raw === 0 ? 0 : raw + (isActive ? dev.bonus : 0);
+  return { rows, breach, raw, total };
+}
+
+/** Instantaneous comparison. next is the index of the device that should hold the traffic group. */
+function evaluate(devs, active) {
+  const a = deviceScore(devs[0], active === 0);
+  const b = deviceScore(devs[1], active === 1);
+  let next = active;
+  if (a.total > b.total) next = 0;
+  else if (b.total > a.total) next = 1;
+  return { scores: [a, b], next };
+}
+
+/**
+ * One monitor interval. failbackReady is true when auto failback is enabled, the preferred device
+ * (first in the traffic group's HA order) is not active, and it is eligible with a raw score at least
+ * equal to the peer's. The caller applies auto-failback-time.
+ */
+function cycle(devs, active, autoFailback, preferred = 0) {
+  const e = evaluate(devs, active);
+  const p = preferred, o = 1 - p;
+  const failbackReady = !!autoFailback && active !== p && e.scores[p].raw > 0 && e.scores[p].raw >= e.scores[o].raw;
+  const reason = e.next !== active
+    ? `peer score ${e.scores[e.next].total} exceeds ${e.scores[active].total}`
+    : `no change`;
+  return { next: e.next, reason, scores: e.scores, failbackReady };
+}
+
+/** Outcome for the active device of losing 1..up links on each trunk, at the current bonus. */
+function failoverMatrix(devs, active) {
+  const d = devs[active];
+  const peer = deviceScore(devs[1 - active], false);
+  const out = [];
+  d.trunks.forEach((t, ti) => {
+    if (t.members <= 0) return;
+    for (let lost = 1; lost <= t.up; lost++) {
+      const alt = { ...d, trunks: d.trunks.map((x, i) => i === ti ? { ...x, up: x.up - lost } : x) };
+      const sc = deviceScore(alt, true);
+      const outcome = sc.breach ? 'ineligible, fails over' : peer.total > sc.total ? 'fails over' : 'stays';
+      out.push({ trunk: t.name, lost, contrib: trunkScore(alt.trunks[ti]).contrib, total: sc.total, peer: peer.total, outcome });
+    }
+  });
+  return out;
+}
+
+/**
+ * Bonus bounds for the active device. maxFail is the highest bonus at which every single-link loss
+ * still fails over (-1 when none does); minHold is the lowest bonus that rides through every
+ * single-link loss. Null when no trunk has a link to lose.
+ */
+function bonusBounds(devs, active) {
+  const d = devs[active];
+  const peer = deviceScore(devs[1 - active], false).total;
+  const base = deviceScore(d, false).raw;
+  let maxFail = Infinity, minHold = -Infinity, any = false;
+  d.trunks.forEach((t, ti) => {
+    if (t.members <= 0 || t.up <= 0) return;
+    const alt = { ...d, trunks: d.trunks.map((x, i) => i === ti ? { ...x, up: x.up - 1 } : x) };
+    const sc = deviceScore(alt, false);
+    any = true;
+    if (sc.breach) return;            // a breach fails over at any bonus
+    const need = peer - sc.raw;       // failover iff bonus < need
+    maxFail = Math.min(maxFail, need - 1);
+    minHold = Math.max(minHold, need);
+  });
+  if (!any) return null;
+  return { maxFail: Math.max(-1, Math.min(LIMITS.bonus[1], maxFail)), minHold: Math.max(0, minHold), base, peer };
+}
+
+/* State */
+
+const blankTrunk = n => ({ name: `trunk${n}`, members: 0, up: 0, min: 0, suf: 0, weight: 10 });
+
+function defaultState() {
+  return {
+    active: 0,
+    autoFailback: false,
+    preferred: 0,
+    failbackTime: 60,
+    sync: false,
+    log: [],
+    maxLinks: 32,
+    devs: [
+      { bonus: 10, trunks: [blankTrunk(1)] },
+      { bonus: 10, trunks: [blankTrunk(1)] },
+    ],
+  };
+}
+
+let S = defaultState();
+const fb = { timer: null, remaining: 0 };
+
+const memberMax = () => S.maxLinks;
+const toInt = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; };
+const logEntry = (moved, text) => S.log.push({ moved, text: `${S.log.length + 1}. ${text}` });
+
+/* Failover engine. Every input change is one monitor interval. */
+
+function step() {
+  const c = cycle(S.devs, S.active, S.autoFailback, S.preferred);
+  if (c.next !== S.active) {
+    logEntry(true, `Member ${S.active + 1} → Member ${c.next + 1}: ${c.scores[0].total} / ${c.scores[1].total}, ${c.reason}`);
+    S.active = c.next;
+  }
+  const ready = cycle(S.devs, S.active, S.autoFailback, S.preferred).failbackReady;
+  if (ready && !fb.timer) startFailback();
+  else if (!ready && fb.timer) cancelFailback('preferred device no longer eligible');
+}
+
+/** auto-failback-time: the preferred device must remain eligible for the whole delay. */
+function startFailback() {
+  fb.remaining = S.failbackTime;
+  if (fb.remaining <= 0) { completeFailback(); return; }
+  fb.timer = setInterval(() => {
+    fb.remaining--;
+    if (!cycle(S.devs, S.active, S.autoFailback, S.preferred).failbackReady) { cancelFailback('preferred device no longer eligible'); return; }
+    if (fb.remaining <= 0) completeFailback();
+    else renderCountdown();
+  }, 1000);
+}
+
+function stopTimer() {
+  if (fb.timer) { clearInterval(fb.timer); fb.timer = null; }
+}
+
+function completeFailback() {
+  stopTimer();
+  const e = evaluate(S.devs, S.active);
+  logEntry(true, `Member ${S.active + 1} → Member ${S.preferred + 1}: auto failback after ${S.failbackTime}s`);
+  S.active = S.preferred;
+  render();
+}
+
+function cancelFailback(why) {
+  stopTimer();
+  logEntry(false, `Auto failback cancelled, ${fb.remaining}s remaining: ${why}`);
+  renderCountdown();
+}
+
+/* Validation. Ranges match tmsh sys ha-group and net trunk. */
+
+function trunkErrors(t) {
+  const e = {};
+  if (t.members < 0 || t.members > memberMax()) e.members = `0 to ${memberMax()} on this platform`;
+  if (t.up < 0 || t.up > t.members) e.up = '0 to member count';
+  if (t.min < 0 || t.min > t.members) e.min = '0 to member count';
+  if (t.suf < 0 || t.suf > t.members) e.suf = '0 to member count';
+  if (t.weight < LIMITS.weight[0] || t.weight > LIMITS.weight[1]) e.weight = `${LIMITS.weight[0]} to ${LIMITS.weight[1]}`;
+  return e;
+}
+
+const bonusInvalid = b => b < LIMITS.bonus[0] || b > LIMITS.bonus[1];
+
+/** Copy trunk configuration from Member 1 to Member 2. Links up stays independent; a Member 2 trunk
+ *  that had every link up follows the new member count. */
+function syncFromMember1() {
+  if (!S.sync) return;
+  const [a, b] = S.devs;
+  b.trunks = a.trunks.map((t, i) => {
+    const o = b.trunks[i];
+    const up = !o || o.up === o.members ? t.members : Math.min(o.up, t.members);
+    return { ...t, up };
+  });
+}
+
+/* Rendering */
+
+const pair = document.getElementById('pair');
+const $ = id => document.getElementById(id);
+
+function selectHtml(value, min, max, attrs, err, disabled) {
+  let opts = '';
+  for (let n = min; n <= max; n++) opts += `<option value="${n}"${n === value ? ' selected' : ''}>${n}</option>`;
+  if (value < min || value > max) opts = `<option value="${value}" selected>${value}</option>` + opts;
+  return `<select ${attrs}${disabled ? ' disabled' : ''} class="${err ? 'invalid' : ''}"${err ? ` title="${err}"` : ''}>${opts}</select>`;
+}
+
+function trunkRowHtml(t, r, s, e, lock) {
+  const field = (key, min, max) => selectHtml(t[key], min, max, `data-k="${key}"`, e[key], lock && key !== 'up');
+  const pct = s.skip ? '' : `${Math.round(s.pct * 100)}%`;
+  return `<tr class="${s.breach ? 'breach' : ''}" data-r="${r}">
+    <td class="name"><input type="text" value="${t.name}" data-k="name"${lock ? ' disabled' : ''}></td>
+    <td>${field('members', 0, memberMax())}</td>
+    <td>${field('up', 0, t.members)}</td>
+    <td>${field('min', 0, t.members)}</td>
+    <td>${field('suf', 0, t.members)}</td>
+    <td>${field('weight', LIMITS.weight[0], LIMITS.weight[1])}</td>
+    <td class="calc ${s.breach ? 'zero' : ''}"${s.breach ? ' title="Below minimum threshold"' : ''}>${pct}</td>
+    <td class="calc ${s.breach ? 'zero' : ''} ${s.contrib > 0 ? 'hit' : ''}">${s.skip ? '' : s.contrib}</td>
+    <td class="rm">${lock ? '' : `<button title="Remove this trunk" data-rm="${r}">&times;</button>`}</td>
+  </tr>`;
+}
+
+function scoreHtml(sc, bonus, isActive) {
+  const part = (label, value, cls = '') => `<span class="part ${cls}"><span class="pl">${label}</span><span class="pv">${value}</span></span>`;
+  if (sc.breach) {
+    return part('Trunks', '0', 'void') + '<span class="op">&rarr;</span>' + part('Total', '0', 'void')
+      + '<span class="void note" title="A trunk is below its minimum threshold">ineligible</span>';
+  }
+  const applied = isActive && sc.raw > 0 ? bonus : 0;
+  return part('Trunks', sc.raw) + '<span class="op">+</span>' + part('Bonus', applied, applied ? 'bonus' : '')
+    + '<span class="op">=</span>' + part('Total', sc.total);
+}
+
+function deviceHtml(i, sc, isActive) {
+  const d = S.devs[i];
+  const lock = i === 1 && S.sync;
+  const rows = d.trunks.map((t, r) => trunkRowHtml(t, r, sc.rows[r], trunkErrors(t), lock)).join('');
+  const tools = (lock
+    ? '<span style="color:var(--muted);font-size:12px">Synced from Member 1</span>'
+    : `<button class="btn add" data-add="${i}" title="Add a trunk to this HA group">Add trunk</button>`)
+    + (isActive ? `<button class="tag" data-setactive="${1 - i}" title="Force this device to standby. The traffic group moves to the peer.">Fail to Standby</button>` : '');
+  return `<section class="device" data-d="${i}">
+    <h2>Cluster Member ${i + 1}</h2>
+    <div class="form-section">
+    <table>
+      <colgroup><col style="width:12%"><col style="width:11%"><col style="width:11%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:9%"><col style="width:15%"><col style="width:6%"></colgroup>
+      <thead><tr><th>Trunk</th><th>Members</th><th><span class="full">Links up</span><span class="short">Up</span></th><th><span class="full">Minimum threshold</span><span class="short">Min thresh</span></th><th><span class="full">Sufficient threshold</span><span class="short">Suff thresh</span></th><th>Weight</th><th><span class="full">Percent up</span><span class="short">% up</span></th><th><span class="full">Score contribution</span><span class="short">Score</span></th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="9" style="color:var(--muted);padding:14px">No trunks.</td></tr>'}</tbody>
+    </table>
+    <div class="tools">${tools}</div>
+    </div>
+    <div class="ledger">
+      <label>Active bonus</label><div><input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" value="${d.bonus}" data-bonus="${i}" class="bonus ${bonusInvalid(d.bonus) ? 'invalid' : ''}" title="Integer ${LIMITS.bonus[0]} to ${LIMITS.bonus[1]} (BIG-IP default 10)"></div>
+      <label>HA score</label><div class="eq">${scoreHtml(sc, d.bonus, isActive)}</div>
+    </div>
+    <div class="state ${isActive ? 'active' : 'standby'}">${isActive ? 'ACTIVE' : 'STANDBY'}</div>
+  </section>`;
+}
+
+function logHtml() {
+  return S.log.map(l => `<li class="${l.moved ? 'move' : 'stay'}">${l.text}</li>`).join('')
+    || '<li class="stay">No failover events.</li>';
+}
+
+function renderCountdown() {
+  const el = $('fbCountdown');
+  if (el) el.textContent = fb.timer ? `Auto failback to Member ${S.preferred + 1} in ${fb.remaining}s` : '';
+  const lg = $('log');
+  if (lg) lg.innerHTML = logHtml();
+}
+
+function renderVerdict(e) {
+  const cur = S.active, other = 1 - cur;
+  const a = e.scores[cur], b = e.scores[other];
+  $('vTitle').textContent = `Traffic group stays on Member ${cur + 1}`;
+  $('vText').textContent = a.total === b.total
+    ? `Scores are equal at ${a.total}.`
+    : `Member ${cur + 1} leads by ${a.total - b.total}. Member ${other + 1} requires a score above ${a.total}.`;
+
+  const anyErr = S.devs.some(d => d.trunks.some(t => Object.keys(trunkErrors(t)).length) || bonusInvalid(d.bonus));
+  let msg = '';
+  if (anyErr) {
+    msg = '<span class="bad">Highlighted inputs are out of range. Active bonus must be 0 to 100.</span>';
+  } else {
+    const d = S.devs[cur];
+    const losses = d.trunks.filter(t => t.members > 0)
+      .map(t => trunkScore(t).contrib - trunkScore({ ...t, up: Math.max(0, t.up - 1) }).contrib)
+      .filter(x => x > 0);
+    const smallest = Math.min(...losses, Infinity);
+    if (isFinite(smallest) && d.bonus >= smallest && b.total === a.raw) {
+      msg = `<span class="warn">Active bonus ${d.bonus} covers the smallest single-link loss (${smallest}). A single link failure will not trigger failover unless it breaches a minimum threshold.</span>`;
+    }
+  }
+  $('vMsg').innerHTML = msg;
+}
+
+function renderMatrix() {
+  const cur = S.active;
+  const rows = failoverMatrix(S.devs, cur);
+  const bb = bonusBounds(S.devs, cur);
+  const bonus = S.devs[cur].bonus;
+  const guide = [];
+  if (!bb) {
+    guide.push('No active links on the active device.');
+  } else {
+    guide.push(bb.maxFail < 0
+      ? 'No bonus value fails over on every single-link loss.'
+      : `Bonus ≤ ${bb.maxFail}: any single-link loss fails over.`);
+    guide.push(`Bonus ≥ ${bb.minHold}: no single-link loss fails over.`);
+    const now = bonus <= bb.maxFail ? 'any single-link loss fails over'
+      : bonus >= bb.minHold ? 'no single-link loss fails over'
+      : 'outcome depends on the trunk';
+    guide.push(`Current bonus ${bonus}: ${now}.`);
+  }
+  $('bonusGuide').innerHTML = guide.map(g => `<li>${g}</li>`).join('');
+  $('matrixBody').innerHTML = rows.length
+    ? rows.map(r => `<tr class="${r.outcome === 'stays' ? 'stay' : 'move'}"><td>${r.trunk}</td><td>${r.lost}</td><td>${r.contrib}</td><td>${r.total}</td><td>${r.peer}</td><td>${r.outcome}</td></tr>`).join('')
+    : '<tr><td colspan="6" style="color:var(--muted)">No active links.</td></tr>';
+  $('matrixTitle').textContent = `Failover matrix: Member ${cur + 1}`;
+}
+
+let rendering = false;
+
+/** Apply one monitor interval, then redraw. Chromium fires focusout on elements removed during the
+ *  redraw; `rendering` lets the bonus blur handler ignore that event. */
+function render() {
+  step();
+  rendering = true;
+  try {
+    const e = evaluate(S.devs, S.active);
+    pair.innerHTML = deviceHtml(0, e.scores[0], S.active === 0) + deviceHtml(1, e.scores[1], S.active === 1);
+    renderVerdict(e);
+    $('autoFailback').checked = S.autoFailback;
+    $('preferred').value = String(S.preferred);
+    $('maxLinks').value = String(S.maxLinks);
+    $('failbackTime').value = S.failbackTime;
+    $('syncCfg').checked = S.sync;
+    $('mirror').disabled = S.sync;
+    renderCountdown();
+    renderMatrix();
+    saveHash();
+  } finally {
+    rendering = false;
+  }
+}
+
+/** Redraw and return focus to the control that triggered the change. */
+function renderKeepingFocus(el) {
+  const dev = el.closest('[data-d]').dataset.d;
+  const tr = el.closest('tr[data-r]');
+  const q = el.dataset.bonus !== undefined
+    ? `[data-d="${dev}"] [data-bonus]`
+    : `[data-d="${dev}"] tr[data-r="${tr.dataset.r}"] [data-k="${el.dataset.k}"]`;
+  const value = el.value, pos = el.selectionStart;
+  render();
+  const n = document.querySelector(q);
+  if (!n) return;
+  n.focus();
+  if (n.dataset.bonus !== undefined) {
+    // keep the raw text while typing; blur clamps it
+    n.value = value;
+    n.classList.toggle('invalid', bonusInvalid(S.devs[+dev].bonus));
+    n.setSelectionRange(pos, pos);
+  }
+}
+
+/* Shareable state: everything except the log, JSON in the URL fragment. */
+
+function saveHash() {
+  try {
+    const { log, ...rest } = S;
+    history.replaceState(null, '', '#' + btoa(unescape(encodeURIComponent(JSON.stringify(rest)))));
+  } catch (_) { /* history unavailable */ }
+}
+
+function loadHash() {
+  if (location.hash.length < 2) return;
+  try {
+    const o = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
+    if (o && o.devs) S = { ...defaultState(), ...o, log: [] };
+  } catch (_) { /* malformed fragment; keep current state */ }
+}
+
+/* Events */
+
+pair.addEventListener('input', ev => {
+  const el = ev.target;
+  const dev = el.closest('[data-d]');
+  if (!dev || el.tagName !== 'INPUT') return;
+  const i = +dev.dataset.d;
+  if (el.dataset.bonus !== undefined) {
+    const digits = el.value.replace(/\D/g, '').slice(0, 3);
+    if (digits !== el.value) el.value = digits;
+    S.devs[i].bonus = digits === '' ? 0 : parseInt(digits, 10);
+    renderKeepingFocus(el);
+    return;
+  }
+  const tr = el.closest('tr[data-r]');
+  if (!tr || el.dataset.k !== 'name') return;
+  const r = +tr.dataset.r;
+  S.devs[i].trunks[r].name = el.value;
+  if (i === 0 && S.sync) {
+    S.devs[1].trunks[r].name = el.value;
+    const peer = document.querySelector(`[data-d="1"] tr[data-r="${r}"] [data-k="name"]`);
+    if (peer) peer.value = el.value;
+  }
+});
+
+pair.addEventListener('focusout', ev => {
+  const el = ev.target;
+  if (rendering || el.dataset.bonus === undefined) return;
+  const i = +el.closest('[data-d]').dataset.d;
+  S.devs[i].bonus = Math.min(LIMITS.bonus[1], Math.max(LIMITS.bonus[0], parseInt(el.value, 10) || 0));
+  render();
+});
+
+pair.addEventListener('change', ev => {
+  const el = ev.target;
+  const dev = el.closest('[data-d]');
+  const tr = el.closest('tr[data-r]');
+  if (!dev || !tr || el.tagName !== 'SELECT') return;
+  const i = +dev.dataset.d;
+  const t = S.devs[i].trunks[+tr.dataset.r];
+  const k = el.dataset.k;
+  t[k] = toInt(el.value);
+  if (k === 'members') for (const f of ['up', 'min', 'suf']) if (t[f] > t.members) t[f] = t.members;
+  if (i === 0 && k !== 'up') syncFromMember1();
+  renderKeepingFocus(el);
+});
+
+pair.addEventListener('click', ev => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  const i = +b.closest('[data-d]').dataset.d;
+  if (b.dataset.add !== undefined) {
+    S.devs[i].trunks.push(blankTrunk(S.devs[i].trunks.length + 1));
+  } else if (b.dataset.rm !== undefined) {
+    S.devs[i].trunks.splice(+b.dataset.rm, 1);
+  } else if (b.dataset.setactive !== undefined) {
+    const to = +b.dataset.setactive;
+    logEntry(true, `Member ${S.active + 1} → Member ${to + 1}: manual failover`);
+    S.active = to;
+  } else {
+    return;
+  }
+  if (i === 0) syncFromMember1();
+  render();
+});
+
+$('maxLinks').addEventListener('change', ev => {
+  S.maxLinks = +ev.target.value;
+  for (const d of S.devs) for (const t of d.trunks) {
+    if (t.members > S.maxLinks) t.members = S.maxLinks;
+    for (const f of ['up', 'min', 'suf']) if (t[f] > t.members) t[f] = t.members;
+  }
+  render();
+});
+
+$('failbackTime').addEventListener('input', ev => {
+  ev.target.value = ev.target.value.replace(/\D/g, '').slice(0, 4);
+  S.failbackTime = Math.min(3600, parseInt(ev.target.value, 10) || 0);
+});
+$('failbackTime').addEventListener('change', () => { stopTimer(); render(); });
+$('preferred').addEventListener('change', ev => { S.preferred = +ev.target.value; render(); });
+$('autoFailback').addEventListener('change', ev => { S.autoFailback = ev.target.checked; render(); });
+$('syncCfg').addEventListener('change', ev => { S.sync = ev.target.checked; syncFromMember1(); render(); });
+
+$('mirror').addEventListener('click', () => {
+  S.devs[1].trunks = S.devs[0].trunks.map(t => ({ ...t }));
+  S.devs[1].bonus = S.devs[0].bonus;
+  render();
+});
+
+$('share').addEventListener('click', async () => {
+  saveHash();
+  try {
+    await navigator.clipboard.writeText(location.href);
+    const b = $('share');
+    b.textContent = 'Copied';
+    setTimeout(() => { b.textContent = 'Copy link'; }, 1500);
+  } catch (_) {
+    prompt('Copy this link', location.href);
+  }
+});
+
+$('resetLog').addEventListener('click', () => { S.log = []; render(); });
+$('reset').addEventListener('click', () => { stopTimer(); S = defaultState(); render(); });
+window.addEventListener('hashchange', () => { stopTimer(); loadHash(); render(); });
+
+const guideDlg = $('guide');
+$('guideBtn').addEventListener('click', () => guideDlg.showModal());
+$('guideClose').addEventListener('click', () => guideDlg.close());
+guideDlg.addEventListener('click', ev => { if (ev.target === guideDlg) guideDlg.close(); });
+
+loadHash();
+render();
+</script>
+</body>
+</html>
