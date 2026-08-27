@@ -19,22 +19,6 @@ Scoring follows the BIG-IP documentation for 13.0 and later:
 
 Trunk limits, weight range (10 to 100) and active bonus range (0 to 100, default 10) match the `sys ha-group` and `net trunk` tmsh references.
 
-## Working with the tool
-
-Each member panel lists its trunks. Members, links up, minimum threshold and sufficient threshold are dropdowns bounded by the member count; weight is 10 to 100; the platform limit in the header caps trunk size at 8, 16 or 32 links. Below the table the score row shows the trunk total, the bonus applied and the resulting HA score, and the banner shows ACTIVE or STANDBY.
-
-Every change is treated as a monitor interval. If the change makes the peer score higher the traffic group moves, the failover log records it, and the placement persists until a later change moves it again. Fail to Standby forces a move. Auto failback, with a preferred device and a delay in seconds, returns the group once the preferred device has stayed eligible for the whole delay; a link that recovers for less than the delay is logged as a cancelled failback. This is the mechanism by which a flapping link does or does not thrash a pair, and the tool reproduces it.
-
-The failover matrix lists, for the device holding the group, the outcome of losing one through all links on each trunk at the current bonus. Above it, two lines give the bonus at or below which every single-link loss fails over and the bonus at or above which none does.
-
-Keep Member 2 synced copies trunk configuration from Member 1 as it is edited, leaving links up independent so either side can be degraded. Copy link places the whole scenario in the URL fragment; opening the link restores it.
-
-## Scope
-
-Trunks only. Pools and VIPRION cluster members use the same arithmetic in an HA group but are not represented. VLAN failsafe, gateway failsafe and the load-aware and ordered-list failover methods are outside the model. The pair is two devices; traffic groups spanning more devices are not modelled.
-
-The auto-failback eligibility test (preferred device eligible with a raw score at least equal to the peer) is an interpretation; F5 documents the delay but not the comparison. Validate against a lab pair before relying on it.
-
 ## References
 
 - BIG-IP DSC Administration 14.1, Managing Failover
