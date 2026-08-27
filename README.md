@@ -2,7 +2,7 @@
 
 A single HTML file that models BIG-IP HA group scoring for trunk-based failover. Enter the trunks, thresholds, weights and active bonus for a device pair and the tool shows the HA score each device computes, which device holds the traffic group, and what each possible link loss would do.
 
-Usage: Open `F5_TMOS_HA_Group_Calculator.html` in a modern browser. The tool runs offline and stores nothing outside the page URL.
+Usage: Open `F5_TMOS_HA_Group_Calculator.html` in a modern browser. 
 
 <img width="1063" height="914" alt="Image" src="https://github.com/user-attachments/assets/2c6c5b7d-92ef-4d3e-88f3-8d7e91a55e51" />
 
