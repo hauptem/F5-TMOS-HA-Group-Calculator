@@ -35,16 +35,6 @@ Trunks only. Pools and VIPRION cluster members use the same arithmetic in an HA 
 
 The auto-failback eligibility test (preferred device eligible with a raw score at least equal to the peer) is an interpretation; F5 documents the delay but not the comparison. Validate against a lab pair before relying on it.
 
-## Tests
-
-`test_ha_group.js` extracts the scoring functions from the HTML file and checks them against an independent implementation written from the F5 documents, including the documented 66-point example, every threshold boundary, and 5,000 random pair configurations. `test_ui.py` drives the page in headless Chromium through failover, manual failover, timed failback, sync, share links and layout stability.
-
-```
-node test_ha_group.js
-pip install playwright && python -m playwright install chromium
-python test_ui.py
-```
-
 ## References
 
 - BIG-IP DSC Administration 14.1, Managing Failover
