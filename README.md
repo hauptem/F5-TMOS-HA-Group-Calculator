@@ -8,14 +8,12 @@ Usage: Open `F5_TMOS_HA_Group_Calculator.html` in a modern browser.
 
 ## What it models
 
-An HA group on BIG-IP assigns a weight to each trunk and scores it by the fraction of links that are up. The device with the higher total holds the traffic group, and the active device adds a bonus to its own total so that small dips do not cause failover. The rules are simple individually but their interaction is not: a weight of 20 with the default bonus of 10 on a two-link trunk never fails over on one lost link, and a weight of 21 does. The tool exists to make those outcomes visible before the configuration reaches a device.
-
 Scoring follows the BIG-IP documentation for 13.0 and later:
 
 - Trunk contribution is `INT(weight × MIN(up, sufficient) / sufficient)`, with sufficient threshold defaulting to the member count. Reaching the sufficient count yields the full weight.
 - A trunk with fewer links up than its minimum threshold contributes 0 and zeroes the device score. A device with score 0 is ineligible and receives no bonus.
 - Device score is the sum of trunk contributions plus the active bonus on the device that holds the traffic group.
-- The traffic group moves only when the peer score is strictly higher. Equal scores keep the current device.
+- The traffic group moves only when the peer score is strictly higher.
 
 Trunk limits, weight range (10 to 100) and active bonus range (0 to 100, default 10) match the `sys ha-group` and `net trunk` tmsh references.
 
