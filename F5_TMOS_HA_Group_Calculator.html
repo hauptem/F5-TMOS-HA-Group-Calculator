@@ -3,7 +3,7 @@
   =============================================================================
   F5 TMOS HA-Group Calculator
   =============================================================================
-  Version: v2.0.0
+  Version: v2.0.1
   Author: Eric Haupt
   Released under the MIT License.
   https://github.com/hauptem/F5-TMOS-HA-Group-Calculator
@@ -263,7 +263,7 @@ table.mx tr.stay td:last-child{color:var(--ok)}
  * (score 0, no bonus). The traffic group moves only when the peer's total is strictly higher.
  */
 
-const LIMITS = { members: [0, 32], weight: [10, 100], bonus: [0, 100] };
+const LIMITS = { weight: [10, 100], bonus: [0, 100], failback: [0, 3600], maxLinks: [8, 16, 32], name: 64 };
 
 /** Score one trunk. Returns { contrib, breach, pct, skip } where skip marks an unused row. */
 function trunkScore(t) {
@@ -301,11 +301,15 @@ function evaluate(devs, active) {
 function cycle(devs, active, autoFailback, preferred = 0) {
   const e = evaluate(devs, active);
   const p = preferred, o = 1 - p;
-  const failbackReady = !!autoFailback && active !== p && e.scores[p].raw > 0 && e.scores[p].raw >= e.scores[o].raw;
+  const blocked = !autoFailback ? 'auto failback disabled'
+    : active === p ? 'preferred device is active'
+    : e.scores[p].raw <= 0 ? 'preferred device ineligible'
+    : e.scores[p].raw < e.scores[o].raw ? 'preferred device score below peer'
+    : null;
   const reason = e.next !== active
     ? `peer score ${e.scores[e.next].total} exceeds ${e.scores[active].total}`
     : `no change`;
-  return { next: e.next, reason, scores: e.scores, failbackReady };
+  return { next: e.next, reason, scores: e.scores, failbackReady: blocked === null, blocked };
 }
 
 /** Outcome for the active device of losing 1..up links on each trunk, at the current bonus. */
@@ -318,7 +322,8 @@ function failoverMatrix(devs, active) {
     for (let lost = 1; lost <= t.up; lost++) {
       const alt = { ...d, trunks: d.trunks.map((x, i) => i === ti ? { ...x, up: x.up - lost } : x) };
       const sc = deviceScore(alt, true);
-      const outcome = sc.breach ? 'ineligible, fails over' : peer.total > sc.total ? 'fails over' : 'stays';
+      const outcome = peer.total > sc.total ? (sc.breach ? 'ineligible, fails over' : 'fails over')
+        : sc.breach ? 'ineligible, stays (peer score 0)' : 'stays';
       out.push({ trunk: t.name, lost, contrib: trunkScore(alt.trunks[ti]).contrib, total: sc.total, peer: peer.total, outcome });
     }
   });
@@ -328,25 +333,34 @@ function failoverMatrix(devs, active) {
 /**
  * Bonus bounds for the active device. maxFail is the highest bonus at which every single-link loss
  * still fails over (-1 when none does); minHold is the lowest bonus that rides through every
- * single-link loss. Null when no trunk has a link to lose.
+ * single-link loss, or null when some loss fails over at any bonus (a minimum-threshold breach,
+ * or a raw score of 0, which receives no bonus). Null when no trunk has a link to lose.
  */
 function bonusBounds(devs, active) {
   const d = devs[active];
   const peer = deviceScore(devs[1 - active], false).total;
   const base = deviceScore(d, false).raw;
-  let maxFail = Infinity, minHold = -Infinity, any = false;
+  let maxFail = Infinity, minHold = -Infinity, any = false, alwaysFails = false;
   d.trunks.forEach((t, ti) => {
     if (t.members <= 0 || t.up <= 0) return;
     const alt = { ...d, trunks: d.trunks.map((x, i) => i === ti ? { ...x, up: x.up - 1 } : x) };
     const sc = deviceScore(alt, false);
     any = true;
-    if (sc.breach) return;            // a breach fails over at any bonus
+    if (sc.breach || sc.raw === 0) {  // no bonus applies; fails over iff the peer is above 0
+      if (peer > 0) alwaysFails = true;
+      else maxFail = Math.min(maxFail, -1);
+      return;
+    }
     const need = peer - sc.raw;       // failover iff bonus < need
     maxFail = Math.min(maxFail, need - 1);
     minHold = Math.max(minHold, need);
   });
   if (!any) return null;
-  return { maxFail: Math.max(-1, Math.min(LIMITS.bonus[1], maxFail)), minHold: Math.max(0, minHold), base, peer };
+  return {
+    maxFail: Math.max(-1, Math.min(LIMITS.bonus[1], maxFail)),
+    minHold: alwaysFails ? null : Math.max(0, minHold),
+    base, peer,
+  };
 }
 
 /* State */
@@ -384,9 +398,9 @@ function step() {
     logEntry(true, `Member ${S.active + 1} → Member ${c.next + 1}: ${c.scores[0].total} / ${c.scores[1].total}, ${c.reason}`);
     S.active = c.next;
   }
-  const ready = cycle(S.devs, S.active, S.autoFailback, S.preferred).failbackReady;
-  if (ready && !fb.timer) startFailback();
-  else if (!ready && fb.timer) cancelFailback('preferred device no longer eligible');
+  const c2 = cycle(S.devs, S.active, S.autoFailback, S.preferred);
+  if (c2.failbackReady && !fb.timer) startFailback();
+  else if (!c2.failbackReady && fb.timer) cancelFailback(c2.blocked);
 }
 
 /** auto-failback-time: the preferred device must remain eligible for the whole delay. */
@@ -395,7 +409,8 @@ function startFailback() {
   if (fb.remaining <= 0) { completeFailback(); return; }
   fb.timer = setInterval(() => {
     fb.remaining--;
-    if (!cycle(S.devs, S.active, S.autoFailback, S.preferred).failbackReady) { cancelFailback('preferred device no longer eligible'); return; }
+    const c = cycle(S.devs, S.active, S.autoFailback, S.preferred);
+    if (!c.failbackReady) { cancelFailback(c.blocked); return; }
     if (fb.remaining <= 0) completeFailback();
     else renderCountdown();
   }, 1000);
@@ -407,7 +422,6 @@ function stopTimer() {
 
 function completeFailback() {
   stopTimer();
-  const e = evaluate(S.devs, S.active);
   logEntry(true, `Member ${S.active + 1} → Member ${S.preferred + 1}: auto failback after ${S.failbackTime}s`);
   S.active = S.preferred;
   render();
@@ -449,6 +463,7 @@ function syncFromMember1() {
 
 const pair = document.getElementById('pair');
 const $ = id => document.getElementById(id);
+const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function selectHtml(value, min, max, attrs, err, disabled) {
   let opts = '';
@@ -461,7 +476,7 @@ function trunkRowHtml(t, r, s, e, lock) {
   const field = (key, min, max) => selectHtml(t[key], min, max, `data-k="${key}"`, e[key], lock && key !== 'up');
   const pct = s.skip ? '' : `${Math.round(s.pct * 100)}%`;
   return `<tr class="${s.breach ? 'breach' : ''}" data-r="${r}">
-    <td class="name"><input type="text" value="${t.name}" data-k="name"${lock ? ' disabled' : ''}></td>
+    <td class="name"><input type="text" value="${esc(t.name)}" maxlength="${LIMITS.name}" data-k="name"${lock ? ' disabled' : ''}></td>
     <td>${field('members', 0, memberMax())}</td>
     <td>${field('up', 0, t.members)}</td>
     <td>${field('min', 0, t.members)}</td>
@@ -536,12 +551,9 @@ function renderVerdict(e) {
     msg = '<span class="bad">Highlighted inputs are out of range. Active bonus must be 0 to 100.</span>';
   } else {
     const d = S.devs[cur];
-    const losses = d.trunks.filter(t => t.members > 0)
-      .map(t => trunkScore(t).contrib - trunkScore({ ...t, up: Math.max(0, t.up - 1) }).contrib)
-      .filter(x => x > 0);
-    const smallest = Math.min(...losses, Infinity);
-    if (isFinite(smallest) && d.bonus >= smallest && b.total === a.raw) {
-      msg = `<span class="warn">Active bonus ${d.bonus} covers the smallest single-link loss (${smallest}). A single link failure will not trigger failover unless it breaches a minimum threshold.</span>`;
+    const bb = bonusBounds(S.devs, cur);
+    if (bb && bb.minHold !== null && d.bonus >= bb.minHold && bb.minHold > 0) {
+      msg = `<span class="warn">Active bonus ${d.bonus} covers every single-link loss (${bb.minHold} is enough). No single link failure on Member ${cur + 1} triggers failover.</span>`;
     }
   }
   $('vMsg').innerHTML = msg;
@@ -559,25 +571,27 @@ function renderMatrix() {
     guide.push(bb.maxFail < 0
       ? 'No bonus value fails over on every single-link loss.'
       : `Bonus ≤ ${bb.maxFail}: any single-link loss fails over.`);
-    guide.push(`Bonus ≥ ${bb.minHold}: no single-link loss fails over.`);
+    guide.push(bb.minHold === null
+      ? 'No bonus value rides through every single-link loss: one loss breaches a minimum threshold or leaves no score.'
+      : `Bonus ≥ ${bb.minHold}: no single-link loss fails over.`);
     const now = bonus <= bb.maxFail ? 'any single-link loss fails over'
-      : bonus >= bb.minHold ? 'no single-link loss fails over'
+      : bb.minHold !== null && bonus >= bb.minHold ? 'no single-link loss fails over'
       : 'outcome depends on the trunk';
     guide.push(`Current bonus ${bonus}: ${now}.`);
   }
   $('bonusGuide').innerHTML = guide.map(g => `<li>${g}</li>`).join('');
   $('matrixBody').innerHTML = rows.length
-    ? rows.map(r => `<tr class="${r.outcome === 'stays' ? 'stay' : 'move'}"><td>${r.trunk}</td><td>${r.lost}</td><td>${r.contrib}</td><td>${r.total}</td><td>${r.peer}</td><td>${r.outcome}</td></tr>`).join('')
+    ? rows.map(r => `<tr class="${r.outcome === 'stays' ? 'stay' : 'move'}"><td>${esc(r.trunk)}</td><td>${r.lost}</td><td>${r.contrib}</td><td>${r.total}</td><td>${r.peer}</td><td>${r.outcome}</td></tr>`).join('')
     : '<tr><td colspan="6" style="color:var(--muted)">No active links.</td></tr>';
   $('matrixTitle').textContent = `Failover matrix: Member ${cur + 1}`;
 }
 
 let rendering = false;
 
-/** Apply one monitor interval, then redraw. Chromium fires focusout on elements removed during the
- *  redraw; `rendering` lets the bonus blur handler ignore that event. */
-function render() {
-  step();
+/** Apply one monitor interval (unless interval is false), then redraw. Chromium fires focusout on
+ *  elements removed during the redraw; `rendering` lets the bonus blur handler ignore that event. */
+function render(interval = true) {
+  if (interval) step();
   rendering = true;
   try {
     const e = evaluate(S.devs, S.active);
@@ -598,14 +612,14 @@ function render() {
 }
 
 /** Redraw and return focus to the control that triggered the change. */
-function renderKeepingFocus(el) {
+function renderKeepingFocus(el, interval = true) {
   const dev = el.closest('[data-d]').dataset.d;
   const tr = el.closest('tr[data-r]');
   const q = el.dataset.bonus !== undefined
     ? `[data-d="${dev}"] [data-bonus]`
     : `[data-d="${dev}"] tr[data-r="${tr.dataset.r}"] [data-k="${el.dataset.k}"]`;
   const value = el.value, pos = el.selectionStart;
-  render();
+  render(interval);
   const n = document.querySelector(q);
   if (!n) return;
   n.focus();
@@ -626,11 +640,50 @@ function saveHash() {
   } catch (_) { /* history unavailable */ }
 }
 
+/** Rebuild state from an untrusted object. Every field is clamped to the ranges the UI enforces;
+ *  anything unusable falls back to the default. */
+function sanitizeState(o) {
+  const def = defaultState();
+  const int = (v, lo, hi, dflt) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; };
+  const st = {
+    ...def,
+    active: int(o.active, 0, 1, def.active),
+    autoFailback: !!o.autoFailback,
+    preferred: int(o.preferred, 0, 1, def.preferred),
+    failbackTime: int(o.failbackTime, LIMITS.failback[0], LIMITS.failback[1], def.failbackTime),
+    sync: !!o.sync,
+    maxLinks: LIMITS.maxLinks.includes(+o.maxLinks) ? +o.maxLinks : def.maxLinks,
+    log: [],
+  };
+  const trunk = (t, n) => {
+    if (!t || typeof t !== 'object') t = {};
+    const members = int(t.members, 0, st.maxLinks, 0);
+    return {
+      name: typeof t.name === 'string' && t.name.length ? t.name.slice(0, LIMITS.name) : `trunk${n}`,
+      members,
+      up: int(t.up, 0, members, members),
+      min: int(t.min, 0, members, 0),
+      suf: int(t.suf, 0, members, 0),
+      weight: int(t.weight, LIMITS.weight[0], LIMITS.weight[1], LIMITS.weight[0]),
+    };
+  };
+  st.devs = [0, 1].map(i => {
+    const d = Array.isArray(o.devs) && o.devs[i] && typeof o.devs[i] === 'object' ? o.devs[i] : {};
+    const trunks = Array.isArray(d.trunks) ? d.trunks.map((t, n) => trunk(t, n + 1)) : def.devs[i].trunks;
+    return { bonus: int(d.bonus, LIMITS.bonus[0], LIMITS.bonus[1], def.devs[i].bonus), trunks };
+  });
+  if (st.sync) {
+    const [a, b] = st.devs;
+    b.trunks = a.trunks.map((t, i) => ({ ...t, up: b.trunks[i] ? Math.min(b.trunks[i].up, t.members) : t.members }));
+  }
+  return st;
+}
+
 function loadHash() {
   if (location.hash.length < 2) return;
   try {
     const o = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
-    if (o && o.devs) S = { ...defaultState(), ...o, log: [] };
+    if (o && typeof o === 'object') S = sanitizeState(o);
   } catch (_) { /* malformed fragment; keep current state */ }
 }
 
@@ -645,13 +698,14 @@ pair.addEventListener('input', ev => {
     const digits = el.value.replace(/\D/g, '').slice(0, 3);
     if (digits !== el.value) el.value = digits;
     S.devs[i].bonus = digits === '' ? 0 : parseInt(digits, 10);
-    renderKeepingFocus(el);
+    // redraw scores while typing; the monitor interval runs on blur, once the value is committed
+    renderKeepingFocus(el, false);
     return;
   }
   const tr = el.closest('tr[data-r]');
   if (!tr || el.dataset.k !== 'name') return;
   const r = +tr.dataset.r;
-  S.devs[i].trunks[r].name = el.value;
+  S.devs[i].trunks[r].name = el.value.slice(0, LIMITS.name);
   if (i === 0 && S.sync) {
     S.devs[1].trunks[r].name = el.value;
     const peer = document.querySelector(`[data-d="1"] tr[data-r="${r}"] [data-k="name"]`);
@@ -711,7 +765,7 @@ $('maxLinks').addEventListener('change', ev => {
 
 $('failbackTime').addEventListener('input', ev => {
   ev.target.value = ev.target.value.replace(/\D/g, '').slice(0, 4);
-  S.failbackTime = Math.min(3600, parseInt(ev.target.value, 10) || 0);
+  S.failbackTime = Math.min(LIMITS.failback[1], parseInt(ev.target.value, 10) || 0);
 });
 $('failbackTime').addEventListener('change', () => { stopTimer(); render(); });
 $('preferred').addEventListener('change', ev => { S.preferred = +ev.target.value; render(); });
