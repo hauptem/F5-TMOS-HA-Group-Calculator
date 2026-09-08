@@ -4,7 +4,7 @@ A single HTML file that models BIG-IP HA group scoring for trunk-based failover.
 
 Usage: Open `F5_TMOS_HA_Group_Calculator.html` in a modern browser. The tool runs offline and stores nothing outside the page URL.
 
-<img width="1108" height="934" alt="Image" src="https://github.com/user-attachments/assets/01363374-6069-4080-bc99-b118b06d4472" />
+<img width="1100" height="936" alt="Image" src="https://github.com/user-attachments/assets/9d2f3374-a4cf-4c60-9b3d-0cbd5905380b" />
 
 ## What it models
 
